@@ -1,92 +1,152 @@
 import { Composer, Middleware, MiddlewareObj } from '../composer.ts'
 import { Context } from '../context.ts'
 import { Filter } from '../filter.ts'
-import { InlineKeyboardButton } from '../platform.ts'
+import {
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LoginUrl,
+} from '../platform.ts'
 
 const textEncoder = new TextEncoder()
 function countBytes(str: string): number {
     return textEncoder.encode(str).length
 }
 
-type MenuMiddleware<C extends Context> = Middleware<
-    Filter<C, 'callback_query:data'> & {
-        menu: {
-            nav: (to: string) => Promise<void>
-            back: () => Promise<void>
-        }
+export interface MenuControls<C extends Context> {
+    menu: {
+        current: Menu<C>
+        update: () => Promise<void>
+        back: () => Promise<void>
+        nav: (to: string) => Promise<void>
     }
->
+}
 
-const _id = Symbol('menu identifier')
-const _mw = Symbol('middleware store')
-const _parent = Symbol('parent menu')
-const _submenus = Symbol('submenu store')
-const _autoAnswer = Symbol('auto answer')
+type MenuContext<C extends Context> = MenuControls<C> &
+    Filter<C, 'callback_query:data'>
 
-export class Menu<C extends Context = Context> implements MiddlewareObj<C> {
-    public readonly inline_keyboard: InlineKeyboardButton[][] = [[]]
+type MenuButton<C extends Context> = RemoveAllTexts<InlineKeyboardButton> & {
+    /**
+     * Label text on the button, or a function that can generate this text.
+     * The function is supplied with the context object that is used to make
+     * the request.
+     */
+    text: string | ((ctx: C) => string | Promise<string>)
+}
+type RemoveAllTexts<T> = T extends { text: string } ? Omit<T, 'text'> : T
 
-    private readonly [_id]: string
-    private readonly [_mw] = new Map<string, MenuMiddleware<C>[]>()
-    private [_parent]: Menu<C> | undefined = undefined
-    private readonly [_submenus] = new Map<string, Menu<C>>()
-    private readonly [_autoAnswer]: boolean
+export class Menu<C extends Context = Context>
+    implements MiddlewareObj<C>, InlineKeyboardMarkup {
+    private readonly id: string
+    private readonly buttons: MenuButton<C>[][] = [[]]
+
+    private parent: Menu<C> | undefined = undefined
+    private readonly subMenus = new Map<string, Menu<C>>()
+
+    private readonly mw = new Map<string, Array<Middleware<MenuContext<C>>>>()
+
+    private readonly autoAnswer: boolean
 
     constructor(id: string, autoAnswer = true) {
         if (id.includes('/'))
             throw new Error(`You cannot use '/' in a menu identifier ('${id}')`)
-        this[_id] = id
-        this[_autoAnswer] = autoAnswer
+        this.id = id
+        this.autoAnswer = autoAnswer
+    }
+
+    get inline_keyboard(): InlineKeyboardButton[][] {
+        throw new Error(
+            `Cannot send menu ${this.id}! Did you forget to use bot.use() for it, or for a parent menu?`
+        )
+    }
+
+    private add(button: MenuButton<C>) {
+        this.buttons[this.buttons.length - 1].push(button)
+        return this
     }
 
     row() {
-        this.inline_keyboard.push([])
+        this.buttons.push([])
         return this
     }
 
-    text(text: string, ...middleware: MenuMiddleware<C>[]) {
-        const path = this.nextPath()
-        const button = { text, callback_data: path }
-        this.inline_keyboard[this.inline_keyboard.length - 1].push(button)
-        this[_mw].set(path, middleware)
-        return this
+    url(text: string, url: string) {
+        return this.add({ text, url })
+    }
+
+    login(text: string, loginUrl: string | LoginUrl) {
+        return this.add({
+            text,
+            login_url:
+                typeof loginUrl === 'string' ? { url: loginUrl } : loginUrl,
+        })
+    }
+
+    text(
+        text: string | ((ctx: C) => string | Promise<string>),
+        ...middleware: Array<Middleware<MenuContext<C>>>
+    ) {
+        const row = this.buttons.length - 1
+        const col = this.buttons[row].length
+        const path = `${this.id}/${row}/${col}`
+        if (countBytes(path) > 64)
+            throw new Error(
+                `Button path '${path}' would exceed payload size of 64 bytes! Please use a shorter menu identifier than '${this.id}'`
+            )
+        this.mw.set(path, middleware)
+        return this.add({ text, callback_data: path })
+    }
+
+    switchInline(text: string, query = '') {
+        return this.add({ text, switch_inline_query: query })
+    }
+
+    switchInlineCurrent(text: string, query = '') {
+        return this.add({ text, switch_inline_query_current_chat: query })
+    }
+
+    game(text: string) {
+        return this.add({ text, callback_game: {} })
+    }
+
+    pay(text: string) {
+        return this.add({ text, pay: true })
     }
 
     subMenu(
-        text: string,
+        text: string | ((ctx: C) => string | Promise<string>),
         menu: Menu<C>,
         options: {
             noBackButton?: boolean
-            onAction?: MenuMiddleware<C>
+            onAction?: Middleware<MenuContext<C>>
         } = {}
     ) {
         // treat undefined as false
         if (options.noBackButton !== true) {
-            const existingParent = menu[_parent]
+            const existingParent = menu.parent
             if (existingParent !== undefined) {
                 throw new Error(
-                    `Cannot add the menu '${menu[_id]}' to '${this[_id]}' \
-because it is already added to '${existingParent[_id]}' \
+                    `Cannot add the menu '${menu.id}' to '${this.id}' \
+because it is already added to '${existingParent.id}' \
 and doing so would break overwrite where the back \
 button returns to! You can call 'subMenu' with \
 'noBackButton: true' to specify that a back button \
-should not be provided.`
+should not be provided, hence preventing this error.`
                 )
             }
-            menu[_parent] = this
+            menu.parent = this
         }
-        this[_submenus].set(menu[_id], menu)
+        this.subMenus.set(menu.id, menu)
         return this.text(
             text,
             ...(options.onAction === undefined ? [] : [options.onAction]),
-            ctx => ctx.menu.nav(menu[_id])
+            ctx => ctx.menu.nav(menu.id)
         )
     }
 
     back(
-        text: string,
+        text: string | ((ctx: C) => string | Promise<string>),
         options: {
-            onAction?: MenuMiddleware<C>
+            onAction?: Middleware<MenuContext<C>>
         } = {}
     ) {
         return this.text(
@@ -96,68 +156,110 @@ should not be provided.`
         )
     }
 
-    private nextPath() {
-        const row = this.inline_keyboard.length - 1
-        const col = this.inline_keyboard[row].length
-        const path = `${this[_id]}/${row}/${col}`
-        if (countBytes(path) > 64)
+    at(id: string) {
+        if (this.id === id) return this
+        const menu = this.subMenus.get(id)
+        if (menu === undefined) {
+            const validIds = Array.from(this.subMenus.keys())
+                .map(k => `'${k}'`)
+                .join(', ')
             throw new Error(
-                `Button path '${path}' would exceed payload size of 64 bytes! Please use a shorter identifier than '${this[_id]}'`
+                `Menu ${id} is not a submenu of ${this.id}! Known subMenus are: ${validIds}`
             )
-        return path
+        }
+        return menu
+    }
+
+    private async fitPayload(payload: Record<string, unknown>, ctx: C) {
+        if (payload.reply_markup !== this) return
+        payload.reply_markup = {
+            inline_keyboard: await Promise.all(
+                this.buttons.map(row =>
+                    Promise.all(
+                        row.map(async btn => ({
+                            ...btn,
+                            text:
+                                typeof btn.text === 'string'
+                                    ? btn.text
+                                    : await btn.text(ctx),
+                        }))
+                    )
+                )
+            ),
+        }
     }
 
     middleware() {
+        const navInstaller = this.navInstaller()
         const composer = new Composer<C>()
-        composer.on('callback_query:data').lazy(ctx => {
-            const path = ctx.callbackQuery.data
-            if (!this[_mw].has(path)) return []
-            const handler = this[_mw].get(path) as Middleware<C>[]
-            const mw = [withNavigation(this), ...handler]
-            if (!this[_autoAnswer]) return mw
-            const c = new Composer<C>()
-            c.fork(ctx => ctx.answerCallbackQuery())
-            c.use(...mw)
-            return c
-        })
-        composer.use(...this[_submenus].values())
+        composer
+            .use((ctx, next) => {
+                ctx.api.config.use(async (prev, method, payload) => {
+                    const p: Record<string, unknown> = payload
+                    if (Array.isArray(p.results)) {
+                        await Promise.all(
+                            p.results.map(r => this.fitPayload(r, ctx))
+                        )
+                    } else {
+                        await this.fitPayload(p, ctx)
+                    }
+                    return await prev(method, payload)
+                })
+                return next()
+            })
+            .use(...this.subMenus.values())
+            .on('callback_query:data')
+            .lazy(ctx => {
+                const path = ctx.callbackQuery.data
+                if (!this.mw.has(path)) return []
+                const handler = this.mw.get(path) as Middleware<C>[]
+                const mw = [navInstaller, ...handler]
+                if (!this.autoAnswer) return mw
+                const c = new Composer<C>()
+                c.fork(ctx => ctx.answerCallbackQuery())
+                c.use(...mw)
+                return c
+            })
         return composer.middleware()
     }
-}
 
-function withNavigation<C extends Context>(menu: Menu<C>): Middleware<C> {
-    const mw: MenuMiddleware<C> = async (ctx, next) => {
-        if (ctx.menu !== undefined)
-            throw new Error(
-                `Already executing menu middleware, cannot run handlers of '${menu[_id]}'!`
-            )
-        // register ctx.menu
-        ctx.menu = {
-            nav: async (to: string) => {
-                if (menu[_id] === to) return
-                if (!menu[_submenus].has(to))
-                    throw new Error(
-                        `Cannot navigate from '${menu[_id]}' to unknown menu '${to}'!`
-                    )
-                await ctx.editMessageReplyMarkup({
-                    reply_markup: menu[_submenus].get(to),
-                })
-            },
-            back: async () => {
-                const parent = menu[_parent]
-                if (parent === undefined)
-                    throw new Error(
-                        `Cannot navigate back from menu ${menu[_id]}, no known parent!`
-                    )
-                await ctx.editMessageReplyMarkup({
-                    reply_markup: menu[_parent],
-                })
-            },
+    private navInstaller<C extends Context>(): Middleware<C> {
+        return async (ctx, next) => {
+            // register ctx.menu
+            Object.assign(ctx, {
+                menu: {
+                    nav: async (to: string) => {
+                        if (this.id === to) return
+                        if (!this.subMenus.has(to))
+                            throw new Error(
+                                `Cannot navigate from '${this.id}' to unknown this '${to}'!`
+                            )
+                        await ctx.editMessageReplyMarkup({
+                            reply_markup: this.subMenus.get(to),
+                        })
+                    },
+                    back: async () => {
+                        const parent = this.parent
+                        if (parent === undefined)
+                            throw new Error(
+                                `Cannot navigate back from this ${this.id}, no known parent!`
+                            )
+                        await ctx.editMessageReplyMarkup({
+                            reply_markup: this.parent,
+                        })
+                    },
+                    update: async () => {
+                        await ctx.editMessageReplyMarkup({ reply_markup: this })
+                    },
+                },
+            })
+            try {
+                // call handlers
+                await next()
+            } finally {
+                // unregister ctx.menu
+                Object.assign(ctx, { menu: undefined })
+            }
         }
-        // call handlers
-        await next()
-        // unregister ctx.menu
-        Object.assign(ctx, { menu: undefined })
     }
-    return mw as Middleware<C>
 }

@@ -62,27 +62,27 @@ export class Api {
     public readonly raw: RawApi
 
     /**
+     * > This is an advanced feature of grammY.
+     *
      * Configuration object for the API instance, used as a namespace to
      * separate those API operations that are related to grammY from methods of
      * the Telegram Bot API. Contains advanced options!
      */
     public readonly config: {
         /**
+         * > This is an advanced feature of grammY.
+         *
          * Allows to install an API request transformer function. A transformer
          * function has access to every API call before it is being performed.
-         * This includes the method as string, the payload as object and the
+         * This includes the method as string, the payload as object, and the
          * upstream transformer function.
-         *
-         * _Note that using transformer functions is an advanced feature of
-         * grammY that most bots will not need to make use of._
          */
         readonly use: TransformerConsumer
         /**
+         * > This is an advanced feature of grammY.
+         *
          * Provides read access to all currently installed transformers (those
          * that have previously been passed to `config.use`).
-         *
-         * _Note that using transformer functions is an advanced feature of
-         * grammY that most bots will not need to make use of._
          */
         readonly installedTransformers: () => Transformer[]
     }
