@@ -8,6 +8,7 @@ export { Context } from './context.ts'
 
 // Convenience stuff and helpers
 export * from './convenience/keyboard.ts'
+export * from './convenience/menu.ts'
 export * from './convenience/router.ts'
 export * from './convenience/session.ts'
 export * from './convenience/webhook.ts'

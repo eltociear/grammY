@@ -53,11 +53,13 @@ export class Menu<C extends Context = Context>
         this.autoAnswer = autoAnswer
     }
 
-    get inline_keyboard(): InlineKeyboardButton[][] {
-        throw new Error(
-            `Cannot send menu ${this.id}! Did you forget to use bot.use() for it, or for a parent menu?`
-        )
-    }
+    public readonly inline_keyboard = new Proxy([], {
+        get: () => {
+            throw new Error(
+                `Cannot send menu '${this.id}'! Did you forget to use bot.use() for it, or for a parent menu?`
+            )
+        },
+    })
 
     private add(button: MenuButton<C>) {
         this.buttons[this.buttons.length - 1].push(button)
@@ -164,7 +166,7 @@ should not be provided, hence preventing this error.`
                 .map(k => `'${k}'`)
                 .join(', ')
             throw new Error(
-                `Menu ${id} is not a submenu of ${this.id}! Known subMenus are: ${validIds}`
+                `Menu '${id}' is not a submenu of '${this.id}'! Known subMenus are: ${validIds}`
             )
         }
         return menu
@@ -229,13 +231,8 @@ should not be provided, hence preventing this error.`
             Object.assign(ctx, {
                 menu: {
                     nav: async (to: string) => {
-                        if (this.id === to) return
-                        if (!this.subMenus.has(to))
-                            throw new Error(
-                                `Cannot navigate from '${this.id}' to unknown this '${to}'!`
-                            )
                         await ctx.editMessageReplyMarkup({
-                            reply_markup: this.subMenus.get(to),
+                            reply_markup: this.at(to),
                         })
                     },
                     back: async () => {
