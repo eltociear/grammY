@@ -62,7 +62,7 @@ export class Menu<C extends Context = Context>
     })
 
     private add(button: MenuButton<C>) {
-        this.buttons[this.buttons.length - 1].push(button)
+        this.buttons[this.buttons.length - 1]?.push(button)
         return this
     }
 
@@ -88,7 +88,7 @@ export class Menu<C extends Context = Context>
         ...middleware: Array<Middleware<MenuContext<C>>>
     ) {
         const row = this.buttons.length - 1
-        const col = this.buttons[row].length
+        const col = this.buttons[row]!.length
         const path = `${this.id}/${row}/${col}`
         if (countBytes(path) > 64)
             throw new Error(
